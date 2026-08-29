@@ -2,14 +2,15 @@ mod linux_oo7;
 
 use anyhow::Result;
 
+use crate::config;
+
 /// Backend used to store a single OTP secret.
 pub enum SecretStore {
     Oo7(linux_oo7::LinuxSecretStore),
 }
 
 impl SecretStore {
-    pub async fn get_provider(opts: Option<SecretProviderOpts>) -> Result<SecretStore> {
-        let opts = opts.unwrap_or(SecretProviderOpts::Oo7Opts);
+    pub async fn get_provider(opts: SecretProviderOpts) -> Result<SecretStore> {
         Ok(match opts {
             SecretProviderOpts::Oo7Opts => {
                 SecretStore::Oo7(linux_oo7::LinuxSecretStore::init().await?)
@@ -44,6 +45,11 @@ impl SecretStore {
 }
 
 pub enum SecretProviderOpts {
-    //TODO: Add default impl with OS detection
     Oo7Opts,
+}
+
+impl From<&config::XivSecretStoreOpts> for SecretProviderOpts {
+    fn from(_value: &config::XivSecretStoreOpts) -> Self {
+        SecretProviderOpts::Oo7Opts
+    }
 }
