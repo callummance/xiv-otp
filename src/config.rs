@@ -33,7 +33,7 @@ pub enum XivOtpCommands {
 #[derive(Debug, Clone, clap::Args)]
 pub struct XivLauncherMonitorOpts {
     #[arg(short = 't', long)]
-    #[arg(default_value_t = 30)]
+    #[arg(default_value_t = 10)]
     /// Interval in seconds to check for XIVLauncher instances
     pub check_period: u64,
 
