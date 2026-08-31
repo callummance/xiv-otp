@@ -15,7 +15,7 @@ pub fn run(opts: &config::XivOtpOpts) {
         .build()
         .expect("Failed to start async runtime.");
 
-    let _res: Result<()> = rt.block_on(async move {
+    let res: Result<()> = rt.block_on(async move {
         let app = XivOtpApp::init(opts).await?;
         match opts.command {
             config::XivOtpCommands::Oneshot { wait } => app.run_oneshot(wait).await?,
@@ -26,6 +26,10 @@ pub fn run(opts: &config::XivOtpOpts) {
 
         Ok(())
     });
+
+    if let Err(e) = res {
+        tracing::error!(?e, "Something failed, exiting...")
+    }
 }
 
 pub struct XivOtpApp {
@@ -67,13 +71,15 @@ impl XivOtpApp {
         let mut generator = self.get_generator().await?;
         // Wait for listener if requested
         if wait {
+            println!("Waiting for XIVLauncher instance...");
             self.wait_for_listener().await?
         }
         // Generate OTP
         let token = generator.generate_current();
         generator.zeroize();
-        tracing::debug!(?token, "Generated OTP");
         // Send request to listener
+        println!("Sending token to XIVLauncher");
+        tracing::debug!(?token, "Generated OTP");
         self.launcher.send_otp(&token.to_string()).await?;
         Ok(())
     }
@@ -84,9 +90,11 @@ impl XivOtpApp {
     pub async fn run_monitor(&self) -> Result<()> {
         let generator = self.get_generator().await?;
         loop {
+            println!("Waiting for XIVLauncher instance...");
             self.wait_for_listener().await?;
 
             let token = generator.generate_current();
+            println!("Sending token to XIVLauncher");
             tracing::debug!(?token, "Generated OTP");
             self.launcher.send_otp(&token.to_string()).await?;
         }
