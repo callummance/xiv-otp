@@ -16,7 +16,7 @@ pub fn run(opts: &config::XivOtpOpts) {
         .expect("Failed to start async runtime.");
 
     let res: Result<()> = rt.block_on(async move {
-        let app = XivOtpApp::init(opts).await?;
+        let mut app = XivOtpApp::init(opts).await?;
         match opts.command {
             config::XivOtpCommands::Oneshot { wait } => app.run_oneshot(wait).await?,
             config::XivOtpCommands::Delete {} => app.run_delete().await?,
@@ -36,6 +36,7 @@ pub struct XivOtpApp {
     opts: config::XivOtpOpts,
     secrets: secret_store::SecretStore,
     launcher: xl_send::XlSender,
+    monitor: monitor::ProcMonitor,
 }
 
 impl XivOtpApp {
@@ -43,11 +44,13 @@ impl XivOtpApp {
         let opts = opts.clone();
         let secrets = secret_store::SecretStore::get_provider((&opts.secret_opts).into()).await?;
         let launcher = xl_send::XlSender::init(&opts.target_opts.addr)?;
+        let monitor = monitor::ProcMonitor::new();
 
         Ok(Self {
             opts,
             secrets,
             launcher,
+            monitor,
         })
     }
 
@@ -66,13 +69,13 @@ impl XivOtpApp {
 
     /// Loads secret from secret store if possible, otherwise asks user to enter it. Immediately
     /// generates an otp key and sends it to the standard XIVLauncher endpoint on the local machine.
-    pub async fn run_oneshot(&self, wait: bool) -> Result<()> {
+    pub async fn run_oneshot(&mut self, wait: bool) -> Result<()> {
         // Try to load secret from store
         let mut generator = self.get_generator().await?;
         // Wait for listener if requested
         if wait {
             println!("Waiting for XIVLauncher instance...");
-            self.wait_for_listener().await?
+            let _pid = self.wait_for_listener().await?;
         }
         // Generate OTP
         let token = generator.generate_current();
@@ -87,7 +90,7 @@ impl XivOtpApp {
     /// Loads secret from secret store if possible, otherwise asks user to enter it.
     /// Once we have the secret, constantly waits for a listening XIVLauncher instance and
     /// generates then submits an OTP whenever one is found.
-    pub async fn run_monitor(&self) -> Result<()> {
+    pub async fn run_monitor(&mut self) -> Result<()> {
         let generator = self.get_generator().await?;
         loop {
             println!("Waiting for XIVLauncher instance...");
@@ -100,11 +103,13 @@ impl XivOtpApp {
         }
     }
 
-    async fn wait_for_listener(&self) -> Result<()> {
+    async fn wait_for_listener(&mut self) -> Result<i32> {
         let interval = std::time::Duration::from_secs(self.opts.monitor_opts.check_period);
         let proc_found_interval =
             std::time::Duration::from_secs(self.opts.monitor_opts.check_period_port);
-        monitor::wait_until_listening(&interval, &proc_found_interval, 4646, "XIVLauncher").await
+        self.monitor
+            .wait_until_listening(&interval, &proc_found_interval, 4646, "XIVLauncher")
+            .await
     }
 
     async fn get_generator(&self) -> Result<totp_rs::Totp> {
