@@ -7,6 +7,9 @@ use anyhow::Result;
 use futures::TryFutureExt;
 use zeroize::Zeroize;
 
+#[cfg(target_os = "linux")]
+use arboard::SetExtLinux;
+
 pub fn run(opts: &config::XivOtpOpts) {
     let rt = tokio::runtime::Builder::new_multi_thread()
         .thread_name("xiv-otp")
@@ -18,10 +21,24 @@ pub fn run(opts: &config::XivOtpOpts) {
     let res: Result<()> = rt.block_on(async move {
         let mut app = XivOtpApp::init(opts).await?;
         match opts.command {
-            config::XivOtpCommands::Oneshot { wait } => app.run_oneshot(wait).await?,
+            config::XivOtpCommands::Oneshot { wait, copy: _ } => app.run_oneshot(wait).await?,
             config::XivOtpCommands::Delete {} => app.run_delete().await?,
             config::XivOtpCommands::Monitor {} => app.run_monitor().await?,
             config::XivOtpCommands::SetSecret {} => app.set_secret().await?,
+            config::XivOtpCommands::Internal(ref xiv_internal_commands) => {
+                match xiv_internal_commands {
+                    config::XivInternalCommands::Clipboard { otp } => {
+                        // Daemonize if needed for clipboard
+                        let mut clipboard = arboard::Clipboard::new()
+                            .expect("Failed to interact with system clipboard.");
+                        clipboard
+                            .set()
+                            .wait()
+                            .text(otp)
+                            .expect("Failed to write to system clipboard");
+                    }
+                }
+            }
         }
 
         Ok(())
@@ -35,7 +52,6 @@ pub fn run(opts: &config::XivOtpOpts) {
 pub struct XivOtpApp {
     opts: config::XivOtpOpts,
     secrets: secret_store::SecretStore,
-    launcher: xl_send::XlSender,
     monitor: monitor::ProcMonitor,
 }
 
@@ -43,13 +59,11 @@ impl XivOtpApp {
     pub async fn init(opts: &config::XivOtpOpts) -> Result<Self> {
         let opts = opts.clone();
         let secrets = secret_store::SecretStore::get_provider((&opts.secret_opts).into()).await?;
-        let launcher = xl_send::XlSender::init(&opts.target_opts.addr)?;
         let monitor = monitor::ProcMonitor::new();
 
         Ok(Self {
             opts,
             secrets,
-            launcher,
             monitor,
         })
     }
@@ -81,9 +95,10 @@ impl XivOtpApp {
         let token = generator.generate_current();
         generator.zeroize();
         // Send request to listener
-        println!("Sending token to XIVLauncher");
+        println!("Sending token...");
         tracing::debug!(?token, "Generated OTP");
-        self.launcher.send_otp(&token.to_string()).await?;
+        let sender = self.get_sender().await?;
+        self.send_otp(&token.to_string(), sender.as_ref()).await?;
         Ok(())
     }
 
@@ -92,15 +107,37 @@ impl XivOtpApp {
     /// generates then submits an OTP whenever one is found.
     pub async fn run_monitor(&mut self) -> Result<()> {
         let generator = self.get_generator().await?;
+        let sender = self.get_sender().await?;
         loop {
             println!("Waiting for XIVLauncher instance...");
-            self.wait_for_listener().await?;
+            let _pid = self.wait_for_listener().await?;
 
             let token = generator.generate_current();
-            println!("Sending token to XIVLauncher");
+            println!("Sending token...");
             tracing::debug!(?token, "Generated OTP");
-            self.launcher.send_otp(&token.to_string()).await?;
+            self.send_otp(&token.to_string(), sender.as_ref()).await?;
         }
+    }
+
+    async fn get_sender(&self) -> Result<Box<dyn xl_send::OtpSender>> {
+        Ok(
+            if let config::XivOtpCommands::Oneshot { copy, .. } = self.opts.command
+                && copy
+            {
+                // copy-only mode
+                Box::new(xl_send::ClipboardSender)
+            } else {
+                Box::new(xl_send::XlSender::init(&self.opts.target_opts.addr)?)
+            },
+        )
+    }
+
+    async fn send_otp(&mut self, tok: &str, sender: &dyn xl_send::OtpSender) -> Result<()> {
+        if self.opts.target_opts.show {
+            println!("{}", tok);
+        }
+        sender.send_otp(tok).await?;
+        Ok(())
     }
 
     async fn wait_for_listener(&mut self) -> Result<i32> {

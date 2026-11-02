@@ -22,12 +22,21 @@ pub enum XivOtpCommands {
     /// Immediately generates OTP and send it to XIVLauncher
     Oneshot {
         #[arg(long)]
-        /// Wait for an XIVLauncher instance to start listening before sending OTP
+        #[arg(conflicts_with = "copy")]
+        /// Wait for an XIVLauncher instance to start listening before sending OTP if possible
         wait: bool,
+
+        #[arg(short = 'c', long = "copy")]
+        #[arg(conflicts_with = "wait")]
+        /// Instead of sending OTP to XIVLauncher directly, send it to clipboard
+        copy: bool,
     },
     /// Constantly waits for XIVLauncher instances to start listening on the provided port,
     /// generating and sending OTPs
     Monitor {},
+
+    #[command(flatten)]
+    Internal(XivInternalCommands),
 }
 
 #[derive(Debug, Clone, clap::Args)]
@@ -52,4 +61,19 @@ pub struct XivOtpTargetOpts {
     #[arg(default_value = "http://localhost:4646")]
     /// Address of the target XIVLauncher instance
     pub addr: String,
+
+    #[arg(long)]
+    #[arg(global = true)]
+    /// Also print the generated OTP to the terminal
+    pub show: bool,
+}
+
+#[derive(Debug, Clone, clap::Subcommand)]
+pub enum XivInternalCommands {
+    #[command(name = "__INTERNAL_DAEMONIZE_WLCLIPBOARD")]
+    #[command(hide = true)]
+    Clipboard {
+        #[arg(index = 1)]
+        otp: String,
+    },
 }
